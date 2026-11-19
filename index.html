@@ -68,8 +68,17 @@ ul.tips{margin:6px 0 0;padding-left:20px;color:var(--mute);font-size:15px}
 .hide{display:none!important}
 .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(20px);background:#10201c;color:#fff;padding:10px 16px;border-radius:999px;font-size:14px;opacity:0;transition:.2s;pointer-events:none}
 .toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+.addrow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:10px;align-items:end;margin-top:6px}
+.asks{list-style:none;padding:0;margin:14px 0 0;display:grid;gap:10px}
+.asks li{border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--field)}
+.asks .who{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.asks .sub{color:var(--mute);font-size:13px}
+.badge{display:inline-block;font-size:12px;font-weight:600;padding:3px 9px;border-radius:999px;background:var(--line);color:var(--ink);white-space:nowrap}
+.badge.due{background:var(--coral);color:#fff}.badge.yes{background:var(--lime);color:var(--g)}
+.asks .actions{margin-top:8px}
+.rate{font-weight:600;margin:12px 0 0}
 footer{text-align:center;color:var(--mute);font-size:13px;padding:0 16px 32px}
-@media(max-width:600px){.row{grid-template-columns:minmax(0,1fr)}.top{padding-bottom:76px}}
+@media(max-width:600px){.row,.addrow{grid-template-columns:minmax(0,1fr)}.top{padding-bottom:76px}}
 @media(prefers-reduced-motion:reduce){.toast{transition:none}}
 </style>
 </head>
@@ -129,7 +138,7 @@ footer{text-align:center;color:var(--mute);font-size:13px;padding:0 16px 32px}
 
     <section class="sent" id="sentBox">
       <h2>Sent it to someone?</h2>
-      <p>Tap below once you've sent your ask to at least one person.</p>
+      <p>Tap below once you've sent your ask. We'll add it to My asks so you can track the reply.</p>
       <button class="btn ghost" id="sentBtn">Yes, I sent it</button>
       <div id="after" class="hide">
         <p id="checkCopy">Nice. Want a quick WhatsApp check-in in 2 days to see if anyone replied?</p>
@@ -143,6 +152,17 @@ footer{text-align:center;color:var(--mute);font-size:13px;padding:0 16px 32px}
     </section>
     <div class="actions" style="justify-content:center"><button class="btn ghost small" id="again">Do another job</button></div>
   </div>
+
+  <section class="card hide" id="trk" style="margin-top:18px">
+    <div class="step"><div class="num">4</div><div><h2>My asks</h2><p>Track who you messaged and who replied. Saved on this device only.</p></div></div>
+    <form id="addAsk" class="addrow" novalidate>
+      <div><label for="aPerson">Person</label><input id="aPerson" placeholder="e.g. Priya"></div>
+      <div><label for="aCompany">Company</label><input id="aCompany" placeholder="e.g. Razorpay"></div>
+      <button class="btn ghost" type="submit">Add</button>
+    </form>
+    <ul class="asks" id="asks"></ul>
+    <p class="rate" id="rate"></p>
+  </section>
 </div></main>
 <footer>Made by Anurag Jindal. We only record which steps are used, never your messages.</footer>
 <div class="toast" id="toast" role="status"></div>
@@ -226,8 +246,8 @@ fields.forEach(k => {
 track("open");
 
 const isUrl = s => /^https?:\/\//i.test(s) || /^[\w-]+\.[\w.-]+\//.test(s);
-function fill(t){
-  const d = data, them = d.them || "there";
+function fill(t, o){
+  const d = Object.assign({}, data, o || {}), them = d.them || "there";
   const jobPart = d.job && !isUrl(d.job) ? ` (Job ID: ${d.job})` : "";
   const jobLine = d.job ? (isUrl(d.job) ? `• Job link: ${d.job}\n` : `• Job ID: ${d.job}\n`) : "";
   const resumeLine = d.resume ? `• Resume: ${d.resume}\n` : "";
@@ -273,6 +293,7 @@ $("f").addEventListener("submit", e => {
   render();
   $("out").classList.remove("hide");
   track("generate", data.job ? "has_job" : "no_job");
+  $("aCompany").value = data.company; renderAsks();
   $("out").scrollIntoView({behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth"});
 });
 $("them").addEventListener("input", () => { data.them = $("them").value.trim(); render(); });
@@ -286,7 +307,10 @@ document.querySelectorAll("[data-copy]").forEach(b => b.addEventListener("click"
   track("copy_" + id);
 }));
 $("cal").addEventListener("click", () => track("reminder"));
-$("sentBtn").addEventListener("click", () => { track("sent"); $("sentBtn").classList.add("hide"); $("after").classList.remove("hide"); });
+$("sentBtn").addEventListener("click", () => {
+  track("sent"); addAsk(data.them, data.company); toast("Added to My asks");
+  $("sentBtn").classList.add("hide"); $("after").classList.remove("hide");
+});
 $("sendFb").addEventListener("click", () => {
   const wa = $("wa").value.replace(/\D/g,""), fb = $("fb").value.trim();
   if (wa) track("checkin", wa);
@@ -297,8 +321,51 @@ $("again").addEventListener("click", () => {
   ["company","role","job"].forEach(k => $(k).value = ""); $("them").value = "";
   $("out").classList.add("hide"); $("sentBtn").classList.remove("hide"); $("after").classList.add("hide");
   $("thanks").classList.add("hide"); $("sendFb").classList.remove("hide");
-  window.scrollTo(0,0); $("company").focus(); track("again");
+  renderAsks(); window.scrollTo(0,0); $("company").focus(); track("again");
 });
+/* ---------- My asks tracker (stored only on this device) ---------- */
+let asks = []; try { asks = JSON.parse(store.get("ar_asks") || "[]"); } catch(e) {}
+const saveAsks = () => store.set("ar_asks", JSON.stringify(asks));
+const daysSince = t => Math.floor((Date.now() - t) / 864e5);
+function addAsk(person, company){
+  company = (company || "").trim(); person = (person || "").trim();
+  const fu = fill(CONFIG.followUp, {them: person, company: company || data.company, role: company && company !== data.company ? "open" : data.role, job: company && company !== data.company ? "" : data.job});
+  asks.unshift({id: Date.now().toString(36) + Math.random().toString(36).slice(2,5), person, company, sent: Date.now(), status: "waiting", fu});
+  saveAsks(); track("ask_added", company); renderAsks();
+}
+function renderAsks(){
+  $("trk").classList.toggle("hide", !asks.length && $("out").classList.contains("hide"));
+  $("asks").innerHTML = asks.map(a => {
+    const d = daysSince(a.sent), due = a.status === "waiting" && d >= CONFIG.followUpDays;
+    const badge = a.status === "replied" ? '<span class="badge yes">Replied</span>'
+      : a.status === "no_reply" ? '<span class="badge">No reply</span>'
+      : due ? '<span class="badge due">Follow up now</span>' : `<span class="badge">Waiting, day ${d}</span>`;
+    const btns = a.status === "waiting"
+      ? `<button class="btn ghost small" data-act="replied" data-id="${a.id}">Replied</button><button class="btn ghost small" data-act="no_reply" data-id="${a.id}">No reply</button>${due ? `<button class="btn ghost small" data-act="fu" data-id="${a.id}">Copy follow-up</button>` : ""}`
+      : `<button class="btn ghost small" data-act="undo" data-id="${a.id}">Undo</button>`;
+    return `<li><div class="who"><div><strong>${esc(a.person || "Someone")}</strong>${a.company ? " at " + esc(a.company) : ""}<div class="sub">Sent ${new Date(a.sent).toLocaleDateString(undefined,{day:"numeric",month:"short"})}</div></div>${badge}</div><div class="actions">${btns}</div></li>`;
+  }).join("");
+  const decided = asks.filter(a => a.status !== "waiting"), yes = asks.filter(a => a.status === "replied");
+  $("rate").textContent = decided.length ? `You've heard back from ${yes.length} of ${asks.length} people you asked.` : "";
+}
+$("addAsk").addEventListener("submit", e => {
+  e.preventDefault();
+  if (!$("aPerson").value.trim() && !$("aCompany").value.trim()) { $("aPerson").focus(); return; }
+  addAsk($("aPerson").value, $("aCompany").value); $("aPerson").value = ""; toast("Added");
+});
+$("asks").addEventListener("click", async e => {
+  const b = e.target.closest("button[data-act]"); if (!b) return;
+  const a = asks.find(x => x.id === b.dataset.id); if (!a) return;
+  const act = b.dataset.act;
+  if (act === "fu") {
+    try { await navigator.clipboard.writeText(a.fu); toast("Follow-up copied"); } catch(_) { toast("Couldn't copy, please copy from card 3"); }
+    track("copy_fu_tracker", a.company); return;
+  }
+  a.status = act === "undo" ? "waiting" : act; saveAsks(); renderAsks();
+  if (act !== "undo") track("reply", `${act}|${a.company}|${daysSince(a.sent)}d`);
+});
+renderAsks();
+
 let tt; function toast(m){ const t = $("toast"); t.textContent = m; t.classList.add("on"); clearTimeout(tt); tt = setTimeout(() => t.classList.remove("on"), 1600); }
 }
 </script>
